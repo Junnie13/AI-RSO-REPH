@@ -1,0 +1,12 @@
+openpyxl
+numpy
+pandas
+matplotlib
+seaborn
+pygwalker
+lazypredict
+scikit-learn
+streamlit
+ydata-profiling
+imbalanced-learn
+ipykernel
