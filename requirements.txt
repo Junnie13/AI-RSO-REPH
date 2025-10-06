@@ -10,3 +10,4 @@ streamlit
 ydata-profiling
 imbalanced-learn
 ipykernel
+shap
