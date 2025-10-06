@@ -35,13 +35,11 @@ if uploaded_file is not None:
 else:
     df = None
 
-# -----------------------------
-# 3. Tabs
-# -----------------------------
-eda_tab, modeling_tab, custom_tab = st.tabs([
+eda_tab, modeling_tab, custom_tab, prediction_tab = st.tabs([
     "📊 Exploratory Data Analysis",
     "🤖 Modeling & SHAP Analysis",
-    "🧠 Custom Data Exploration"
+    "🧠 Custom Data Exploration",
+    "📝 Predict Employee Attrition"
 ])
 
 # =============================================================================
@@ -170,3 +168,66 @@ with custom_tab:
         st.markdown("Use **PyGWalker** to explore your dataset freely — drag, drop, and visualize interactively.")
         pyg_app = StreamlitRenderer(df)
         pyg_app.explorer()
+
+# =============================================================================
+# TAB 4 — PREDICTION
+# =============================================================================
+with prediction_tab:
+    if df is None:
+        st.info("👆 Please upload a dataset first to train the model.")
+    else:
+        st.header("📝 Predict Employee Attrition")
+
+        # --- Single Employee Prediction ---
+        st.subheader("Single Employee Prediction")
+        st.markdown("Input employee details below and get predicted attrition.")
+
+        # Create input widgets dynamically
+        user_input = {}
+        for col in X.columns:
+            if str(df[col].dtype) in ["int64", "float64"]:
+                user_input[col] = st.number_input(f"{col}", value=float(df[col].median()))
+            else:
+                unique_vals = df[col].unique().tolist()
+                user_input[col] = st.selectbox(f"{col}", options=unique_vals)
+
+        if st.button("Predict Attrition for Single Employee"):
+            # Prepare the input
+            input_df = pd.DataFrame([user_input])
+            input_encoded = input_df.apply(lambda x: LabelEncoder().fit_transform(x) if x.dtype == "object" else x)
+            input_scaled = scaler.transform(input_encoded)
+            prediction = model.predict(input_scaled)
+            prediction_label = "Yes" if prediction[0] == 1 else "No"
+            st.success(f"Predicted Attrition: **{prediction_label}**")
+
+        # --- Batch Prediction ---
+        st.subheader("Batch Prediction from File")
+        batch_file = st.file_uploader("Upload CSV/XLSX for Batch Prediction", type=["csv", "xlsx"], key="batch_upload")
+
+        if batch_file is not None:
+            if batch_file.name.endswith(".xlsx"):
+                batch_df = pd.read_excel(batch_file)
+            else:
+                batch_df = pd.read_csv(batch_file)
+
+            st.write(f"Dataset loaded with {batch_df.shape[0]} rows and {batch_df.shape[1]} columns.")
+
+            # Encode & scale batch data
+            batch_encoded = batch_df.apply(lambda x: LabelEncoder().fit_transform(x) if x.dtype == "object" else x)
+            batch_scaled = scaler.transform(batch_encoded)
+            batch_predictions = model.predict(batch_scaled)
+            batch_df["Attrition_Prediction"] = ["Yes" if p == 1 else "No" for p in batch_predictions]
+
+            st.success("Predictions completed!")
+
+            # Show first few rows
+            st.dataframe(batch_df.head())
+
+            # Download button
+            csv = batch_df.to_csv(index=False)
+            st.download_button(
+                label="📥 Download Predictions as CSV",
+                data=csv,
+                file_name="attrition_predictions.csv",
+                mime="text/csv"
+            )
