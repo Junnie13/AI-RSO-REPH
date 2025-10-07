@@ -1,233 +1,483 @@
+# --------------------------------------------------------
+# EMPLOYEE ATTRITION DASHBOARD (XGBoost + Pickle Version)
+# --------------------------------------------------------
 import streamlit as st
 import pandas as pd
-import plotly.express as px
-import shap
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import GradientBoostingClassifier
-from sklearn.preprocessing import LabelEncoder, StandardScaler
-from sklearn.metrics import classification_report, confusion_matrix, roc_curve, roc_auc_score
-from pygwalker.api.streamlit import StreamlitRenderer
 import numpy as np
+import shap
+import matplotlib.pyplot as plt
+import seaborn as sns
+import pickle
+from io import BytesIO
+from pygwalker.api.streamlit import StreamlitRenderer
 
-# -----------------------------
-# 1. Page Configuration
-# -----------------------------
-st.set_page_config(
-    page_title="Employee Retention Dashboard",
-    page_icon="👩‍💼",
-    layout="wide"
-)
+# --------------------------------------------------------
+# PAGE CONFIG
+# --------------------------------------------------------
+st.set_page_config(page_title="Employee Attrition Dashboard", layout="wide")
+st.title("📊 Employee Attrition Prediction Dashboard")
 
-st.title("Employee Retention Analysis Dashboard")
+# --------------------------------------------------------
+# SIDEBAR NAVIGATION
+# --------------------------------------------------------
+page = st.sidebar.radio("Navigation", ["Dashboard", "Sandbox"])
 
-# -----------------------------
-# 2. Sidebar Upload
-# -----------------------------
-st.sidebar.header("📂 Upload Your Dataset")
-uploaded_file = st.sidebar.file_uploader("Upload Excel or CSV file", type=["xlsx", "csv"])
+# --------------------------------------------------------
+# LOAD TRAINED MODEL
+# --------------------------------------------------------
+@st.cache_resource
+def load_model():
+    with open("employee_attrition_model.pkl", "rb") as f:
+        model = pickle.load(f)
+    expected_cols = model.named_steps['preprocessor'].feature_names_in_
+    return model, expected_cols
 
-if uploaded_file is not None:
-    if uploaded_file.name.endswith(".xlsx"):
-        df = pd.read_excel(uploaded_file)
-    else:
-        df = pd.read_csv(uploaded_file)
-    st.sidebar.success(f"Loaded dataset with {df.shape[0]} rows and {df.shape[1]} columns.")
+model, expected_cols = load_model()
+
+# --------------------------------------------------------
+# PAGE 1: DASHBOARD
+# --------------------------------------------------------
+if page == "Dashboard":
+    tab1, tab2, tab3 = st.tabs(["Predict Employee Attrition", "Data Exploration", "Data Analysis"])
+
+    # --------------------------------------------------------
+    # TAB 1: PREDICT EMPLOYEE ATTRITION
+    # --------------------------------------------------------
+    with tab1:
+
+        analysis_mode = st.radio("Choose Analysis Mode:", ["Single Analysis", "Batch Analysis"])
+
+        # ---------------- SINGLE ANALYSIS ----------------
+        if analysis_mode == "Single Analysis":
+            st.markdown("Provide employee details below to predict attrition.")
+
+            # Split input form into columns
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                Age = st.number_input("Age", 18, 60, 35)
+                Gender = st.selectbox("Gender", ["Female", "Male"])
+                OverTime = st.selectbox("OverTime", ["No", "Yes"])
+                Department = st.selectbox("Department", ["Human Resources", "Research & Development", "Sales"])
+                BusinessTravel = st.selectbox("Business Travel", ["Non-Travel", "Travel_Rarely", "Travel_Frequently"])
+
+            with col2:
+                EducationField = st.selectbox("Education Field", ["Human Resources", "Life Sciences", "Marketing", "Medical", "Technical Degree", "Other"])
+                JobRole = st.selectbox("JobRole", [
+                    "Healthcare Representative", "Human Resources", "Laboratory Technician", "Manager",
+                    "Manufacturing Director", "Research Director", "Research Scientist", "Sales Executive", "Sales Representative"
+                ])
+                MaritalStatus = st.selectbox("Marital Status", ["Divorced", "Married", "Single"])
+                MonthlyIncome = st.number_input("Monthly Income", 1000, 20000, 5000)
+                Education = st.slider("Education (1–5)", 1, 5, 3)
+
+            with col3:
+                TotalWorkingYears = st.number_input("Total Working Years", 0, 40, 10)
+                YearsAtCompany = st.number_input("Years at Company", 0, 40, 5)
+                WorkLifeBalance = st.slider("Work-Life Balance (1–4)", 1, 4, 3)
+                JobSatisfaction = st.slider("Job Satisfaction (1–4)", 1, 4, 3)
+                PerformanceRating = st.slider("Performance Rating (1–4)", 1, 4, 3)
+
+            # Construct DataFrame
+            input_dict = {
+                "Age": Age,
+                "Gender": Gender,
+                "OverTime": OverTime,
+                "Department": Department,
+                "BusinessTravel": BusinessTravel,
+                "EducationField": EducationField,
+                "JobRole": JobRole,
+                "MaritalStatus": MaritalStatus,
+                "MonthlyIncome": MonthlyIncome,
+                "Education": Education,
+                "TotalWorkingYears": TotalWorkingYears,
+                "YearsAtCompany": YearsAtCompany,
+                "WorkLifeBalance": WorkLifeBalance,
+                "JobSatisfaction": JobSatisfaction,
+                "PerformanceRating": PerformanceRating
+            }
+
+            input_df = pd.DataFrame([input_dict])
+
+            # Align columns with training features
+            for col in expected_cols:
+                if col not in input_df.columns:
+                    input_df[col] = np.nan
+            input_df = input_df.reindex(columns=expected_cols)
+
+            if st.button("Predict Attrition"):
+                # Predict
+                pred_prob = model.predict_proba(input_df)[0][1]
+                pred_class = "Yes" if pred_prob > 0.5 else "No"
+                st.success(f"Predicted Attrition: **{pred_class}** (Probability: {pred_prob:.2f})")
+
+        # ---------------- BATCH ANALYSIS ----------------
+        else:
+            st.markdown("Upload a dataset (without the Attrition column). The system will predict and append results.")
+
+            uploaded_file = st.file_uploader("Upload Excel File", type=["xlsx"])
+            if uploaded_file:
+                df_input_original = pd.read_excel(uploaded_file)
+                st.session_state["original_data"] = df_input_original.copy()
+
+                progress = st.progress(0)
+                st.info("Processing data...")
+                progress.progress(25)
+
+                # Handle missing columns
+                df_input = df_input_original.copy()
+                for col in expected_cols:
+                    if col not in df_input.columns:
+                        df_input[col] = np.nan
+                df_input = df_input.reindex(columns=expected_cols)
+                progress.progress(50)
+
+                st.info("Running model predictions...")
+                preds = model.predict(df_input)
+                probs = model.predict_proba(df_input)[:, 1]
+                progress.progress(75)
+
+                df_output = df_input_original.copy()
+                df_output["Attrition Prediction"] = np.where(preds == 1, "Yes", "No")
+                df_output["Attrition Probability"] = probs.round(2)
+                progress.progress(100)
+                st.success("✅ Prediction Complete!")
+
+                buffer = BytesIO()
+                df_output.to_excel(buffer, index=False)
+                buffer.seek(0)
+                st.download_button(
+                    label="📥 Download Predicted File",
+                    data=buffer,
+                    file_name="predicted_attrition.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+
+                st.session_state["predicted_data"] = df_output
+
+    # --------------------------------------------------------
+    # TAB 2: DATA EXPLORATION (DARK THEME COLORS)
+    # --------------------------------------------------------
+    with tab2:
+
+        if "predicted_data" in st.session_state:
+            import plotly.express as px
+            import plotly.graph_objects as go
+
+            df_pred = st.session_state["predicted_data"].copy()
+
+            # --------------------------------------
+            # 🧮 SAFE NUMERIC CONVERSIONS
+            # --------------------------------------
+            df_pred["OverTime_num"] = df_pred["OverTime"].map({"Yes": 1, "No": 0})
+            df_pred["Attrition_num"] = df_pred["Attrition Prediction"].map({"Yes": 1, "No": 0})
+            get_mean = lambda col: df_pred[col].mean() if col in df_pred.columns else 0
+
+            # --------------------------------------
+            # 🧮 CLEAN KEY METRICS OVERVIEW
+            # --------------------------------------
+            st.markdown("### 🧮 Key Metrics Overview")
+
+            total_employees = len(df_pred)
+            churned = df_pred["Attrition Prediction"].value_counts().get("Yes", 0)
+            retained = df_pred["Attrition Prediction"].value_counts().get("No", 0)
+            churn_rate = (churned / total_employees) * 100 if total_employees else 0
+            avg_income = get_mean("MonthlyIncome")
+            avg_age = get_mean("Age")
+            overtime_rate = get_mean("OverTime_num")
+
+            colA, colB, colC = st.columns(3)
+            with colA:
+                st.metric("👥 Total Employees", f"{total_employees:,}")
+            with colB:
+                st.metric("💔 Predicted to Leave", f"{churned:,}")
+            with colC:
+                st.metric("💼 Retained", f"{retained:,}")
+
+            colD, colE, colF = st.columns(3)
+            with colD:
+                st.metric("💰 Avg. Monthly Income", f"{avg_income:,.0f}")
+            with colE:
+                st.metric("🎂 Avg. Age", f"{avg_age:.1f}")
+            with colF:
+                st.metric("⏰ Overtime Rate", f"{overtime_rate * 100:.1f}%")
+
+            st.markdown("---")
+
+            # --------------------------------------
+            # 🌙 DARK THEME VISUALS
+            # --------------------------------------
+            st.markdown("### 🌌 Visual Trends")
+
+            dark_palette = px.colors.qualitative.Set2
+            dark_palette_alt = px.colors.qualitative.Safe
+
+            col1, col2 = st.columns(2)
+
+            # 1️⃣ Attrition Breakdown
+            with col1:
+                fig1 = px.pie(
+                    df_pred,
+                    names="Attrition Prediction",
+                    title="Attrition Prediction Breakdown",
+                    color_discrete_sequence=dark_palette,
+                    hole=0.45
+                )
+                fig1.update_traces(textinfo="percent+label")
+                fig1.update_layout(
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    font=dict(color="white")
+                )
+                st.plotly_chart(fig1, use_container_width=True)
+
+            # 2️⃣ Probability Distribution
+            with col2:
+                fig2 = px.histogram(
+                    df_pred,
+                    x="Attrition Probability",
+                    nbins=25,
+                    color="Attrition Prediction",
+                    color_discrete_sequence=dark_palette_alt,
+                    title="Attrition Probability Distribution"
+                )
+                fig2.update_layout(
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    font=dict(color="white"),
+                    yaxis_title="Count",
+                    xaxis_title="Probability"
+                )
+                st.plotly_chart(fig2, use_container_width=True)
+
+            col3, col4 = st.columns(2)
+
+            # 3️⃣ Department vs Attrition Rate
+            with col3:
+                if {"Department", "Attrition Prediction"}.issubset(df_pred.columns):
+                    df_dept = (
+                        df_pred.groupby("Department")["Attrition Prediction"]
+                        .value_counts(normalize=True)
+                        .rename("Rate")
+                        .reset_index()
+                    )
+                    fig3 = px.bar(
+                        df_dept,
+                        x="Department",
+                        y="Rate",
+                        color="Attrition Prediction",
+                        barmode="group",
+                        title="Attrition Rate by Department",
+                        color_discrete_sequence=dark_palette
+                    )
+                    fig3.update_yaxes(tickformat=".0%")
+                    fig3.update_layout(
+                        plot_bgcolor="rgba(0,0,0,0)",
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        font=dict(color="white")
+                    )
+                    st.plotly_chart(fig3, use_container_width=True)
+
+            # 4️⃣ Income vs Probability
+            with col4:
+                if {"MonthlyIncome", "Attrition Probability"}.issubset(df_pred.columns):
+                    fig4 = px.scatter(
+                        df_pred,
+                        x="MonthlyIncome",
+                        y="Attrition Probability",
+                        color="Attrition Prediction",
+                        title="Monthly Income vs Attrition Probability",
+                        color_discrete_sequence=dark_palette_alt,
+                        opacity=0.8
+                    )
+                    fig4.update_layout(
+                        plot_bgcolor="rgba(0,0,0,0)",
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        font=dict(color="white")
+                    )
+                    st.plotly_chart(fig4, use_container_width=True)
+
+            col5, col6 = st.columns(2)
+
+            # 5️⃣ Job Satisfaction
+            with col5:
+                if {"JobSatisfaction", "Attrition Probability"}.issubset(df_pred.columns):
+                    fig5 = px.box(
+                        df_pred,
+                        x="JobSatisfaction",
+                        y="Attrition Probability",
+                        color="Attrition Prediction",
+                        title="Job Satisfaction vs Attrition Probability",
+                        color_discrete_sequence=dark_palette
+                    )
+                    fig5.update_layout(
+                        plot_bgcolor="rgba(0,0,0,0)",
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        font=dict(color="white")
+                    )
+                    st.plotly_chart(fig5, use_container_width=True)
+
+            # 6️⃣ Work-Life Balance
+            with col6:
+                if {"WorkLifeBalance", "Attrition Prediction"}.issubset(df_pred.columns):
+                    df_wlb = (
+                        df_pred.groupby("WorkLifeBalance")["Attrition Prediction"]
+                        .value_counts(normalize=True)
+                        .rename("Rate")
+                        .reset_index()
+                    )
+                    fig6 = px.bar(
+                        df_wlb,
+                        x="WorkLifeBalance",
+                        y="Rate",
+                        color="Attrition Prediction",
+                        barmode="group",
+                        title="Work-Life Balance vs Attrition Rate",
+                        color_discrete_sequence=dark_palette_alt
+                    )
+                    fig6.update_yaxes(tickformat=".0%")
+                    fig6.update_layout(
+                        plot_bgcolor="rgba(0,0,0,0)",
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        font=dict(color="white")
+                    )
+                    st.plotly_chart(fig6, use_container_width=True)
+
+            # 7️⃣ Role Tenure vs Probability
+            st.markdown("### 🕒 Role Tenure Trends")
+            df_pred.columns = df_pred.columns.str.strip()
+
+            if {"YearsInCurrentRole", "Attrition Probability"}.issubset(df_pred.columns):
+                if not df_pred.empty and df_pred["YearsInCurrentRole"].notnull().any():
+                    fig7 = px.scatter(
+                        df_pred,
+                        x="YearsInCurrentRole",
+                        y="Attrition Probability",
+                        color="Attrition Prediction",
+                        title="Years in Current Role vs Attrition Probability",
+                        color_discrete_sequence=px.colors.qualitative.Dark24,  # 💫 visible on dark bg
+                        opacity=0.85,
+                        hover_data=["MonthlyIncome", "JobRole", "Department"]
+                    )
+                    fig7.update_layout(
+                        plot_bgcolor="rgba(0,0,0,0)",
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        font=dict(color="white"),
+                        title_font=dict(size=16),
+                        xaxis_title="Years in Current Role",
+                        yaxis_title="Attrition Probability",
+                        legend_title_text="Attrition Prediction"
+                    )
+                    st.plotly_chart(fig7, use_container_width=True)
+                else:
+                    st.info("⚠️ No valid data available for 'YearsInCurrentRole' or 'Attrition Probability'.")
+            else:
+                st.warning("Columns 'YearsInCurrentRole' or 'Attrition Probability' not found in dataset.")
+
+    # --------------------------------------------------------
+    # TAB 3: DATA ANALYSIS (SHAP)
+    # --------------------------------------------------------
+    with tab3:
+
+
+        if "predicted_data" in st.session_state:
+            df_pred = st.session_state["predicted_data"].copy()
+
+            # Drop prediction-related columns
+            X = df_pred.drop(columns=[col for col in df_pred.columns if "Attrition" in col])
+
+            # Align columns to model expectations
+            for col in expected_cols:
+                if col not in X.columns:
+                    X[col] = np.nan
+            X = X.reindex(columns=expected_cols)
+
+
+
+            # Transform data
+            preprocessor = model.named_steps["preprocessor"]
+            X_transformed = preprocessor.transform(X)
+
+            # ✅ Get the actual feature names after preprocessing
+            try:
+                feature_names = preprocessor.get_feature_names_out()
+            except:
+                feature_names = [f"Feature {i}" for i in range(X_transformed.shape[1])]
+
+            # Compute SHAP
+            explainer = shap.Explainer(model.named_steps["classifier"])
+            shap_values = explainer(X_transformed)
+
+            # Create two columns for side-by-side visuals
+            col1, col2 = st.columns(2, gap="medium")
+
+            # 🎯 SHAP Summary Plot
+            with col1:
+                st.markdown("### 🎯 SHAP Summary Plot")
+                fig, ax = plt.subplots(figsize=(6, 8))
+                shap.summary_plot(
+                    shap_values.values,
+                    features=X_transformed,
+                    feature_names=feature_names,
+                    plot_type="dot",
+                    color_bar=True,
+                    cmap=plt.cm.coolwarm,
+                    show=False
+                )
+                st.pyplot(fig, bbox_inches="tight")
+
+            # 📊 Top 10 Features
+            with col2:
+                st.markdown("### 📊 Top Features Influencing Attrition")
+                shap_sum = np.abs(shap_values.values).mean(axis=0)
+                shap_importance = (
+                    pd.DataFrame({
+                        "Feature": feature_names,
+                        "Mean |SHAP|": shap_sum
+                    })
+                    .sort_values("Mean |SHAP|", ascending=False)
+                    .head(10)
+                )
+
+                fig2 = px.bar(
+                    shap_importance,
+                    x="Mean |SHAP|",
+                    y="Feature",
+                    orientation="h",
+                    color="Mean |SHAP|",
+                    color_continuous_scale="tealrose",
+                    title="Top 10 Most Influential Features",
+                )
+                fig2.update_layout(
+                    yaxis=dict(categoryorder="total ascending"),
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    font=dict(color="#E0E0E0"),
+                    height=500,
+                    margin=dict(l=0, r=0, t=40, b=40)
+                )
+                st.plotly_chart(fig2, use_container_width=True)
+
+        else:
+            st.warning("Please process a batch file first to analyze SHAP values.")
+
+
+
+# --------------------------------------------------------
+# PAGE 2: SANDBOX
+# --------------------------------------------------------
 else:
-    df = None
+    st.title("🧪 Sandbox Environment")
+    st.write("Explore the **predicted dataset** here (with predictions and probabilities).")
 
-eda_tab, modeling_tab, custom_tab, prediction_tab = st.tabs([
-    "📊 Exploratory Data Analysis",
-    "🤖 Modeling & SHAP Analysis",
-    "🧠 Custom Data Exploration",
-    "📝 Predict Employee Attrition"
-])
+    # Check if predicted dataset is stored in session_state
+    if "predicted_data" in st.session_state:
+        df_sandbox = st.session_state["predicted_data"]
 
-# =============================================================================
-# TAB 1 — EXPLORATORY DATA ANALYSIS
-# =============================================================================
-with eda_tab:
-    if df is None:
-        st.info("👆 Please upload a dataset in the sidebar to begin exploring.")
-    else:
-        st.header("📊 Exploratory Data Analysis")
-
-        # --- Attrition Count ---
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("Attrition Count")
-            fig = px.histogram(df, x="Attrition", color="Attrition", color_discrete_sequence=px.colors.qualitative.Pastel)
-            st.plotly_chart(fig, use_container_width=True)
-
-        with col2:
-            st.subheader("Attrition by Gender")
-            fig = px.histogram(df, x="Gender", color="Attrition", barmode="group",
-                               color_discrete_sequence=px.colors.qualitative.Safe)
-            st.plotly_chart(fig, use_container_width=True)
-
-        # --- Department-wise Attrition Rate ---
-        st.subheader("Department-wise Attrition Rate")
-        dept_attrition = df.groupby("Department")["Attrition"].value_counts(normalize=True).unstack().fillna(0)
-        dept_attrition = dept_attrition.reset_index().melt(id_vars="Department", var_name="Attrition", value_name="Rate")
-        fig = px.bar(dept_attrition, x="Department", y="Rate", color="Attrition", barmode="stack",
-                     color_discrete_sequence=px.colors.sequential.Viridis)
-        st.plotly_chart(fig, use_container_width=True)
-
-        # --- Monthly Income Distribution ---
-        st.subheader("Distribution of Monthly Income")
-        fig = px.histogram(df, x="MonthlyIncome", nbins=30, color_discrete_sequence=["teal"], marginal="box")
-        st.plotly_chart(fig, use_container_width=True)
-
-        # --- Correlation Heatmap ---
-        st.subheader("Correlation Heatmap")
-        numeric_df = df.select_dtypes(include=["int64", "float64"])
-        corr = numeric_df.corr()
-        fig = px.imshow(corr, text_auto=False, color_continuous_scale="RdBu_r", title="Correlation Matrix")
-        st.plotly_chart(fig, use_container_width=True)
-
-        # --- Job Satisfaction by Job Role ---
-        st.subheader("Average Job Satisfaction by Role")
-        if "JobRole" in df.columns and "JobSatisfaction" in df.columns:
-            fig = px.bar(df, x="JobRole", y="JobSatisfaction", color="JobRole",
-                         color_discrete_sequence=px.colors.qualitative.Prism)
-            fig.update_layout(xaxis_tickangle=45)
-            st.plotly_chart(fig, use_container_width=True)
-
-# =============================================================================
-# TAB 2 — MODELING & SHAP ANALYSIS
-# =============================================================================
-with modeling_tab:
-    if df is None:
-        st.info("👆 Please upload a dataset to perform modeling and SHAP analysis.")
-    else:
-        st.header("🤖 Employee Attrition Model and SHAP Analysis")
-
-        target_col = st.selectbox(
-            "Select Target Column",
-            options=df.columns,
-            index=list(df.columns).index("Attrition") if "Attrition" in df.columns else 0
-        )
-
-        X = df.drop(columns=[target_col])
-        y = df[target_col]
-
-        # Encode categorical variables
-        X = X.apply(lambda x: LabelEncoder().fit_transform(x) if x.dtype == "object" else x)
-        if y.dtype == "object":
-            y = LabelEncoder().fit_transform(y)
-
-        # Split data
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
-
-        # Standardize
-        scaler = StandardScaler()
-        X_train_scaled = scaler.fit_transform(X_train)
-        X_test_scaled = scaler.transform(X_test)
-
-        # Train Model
-        model = GradientBoostingClassifier(random_state=42)
-        model.fit(X_train_scaled, y_train)
-
-        y_pred = model.predict(X_test_scaled)
-        y_prob = model.predict_proba(X_test_scaled)[:, 1]
-
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("Classification Report")
-            st.text(classification_report(y_test, y_pred))
-
-        with col2:
-            st.subheader("Confusion Matrix")
-            cm = confusion_matrix(y_test, y_pred)
-            cm_df = pd.DataFrame(cm, index=["Actual 0", "Actual 1"], columns=["Pred 0", "Pred 1"])
-            fig = px.imshow(cm_df, text_auto=True, color_continuous_scale="Blues", title="Confusion Matrix")
-            st.plotly_chart(fig, use_container_width=True)
-
-        # --- ROC Curve ---
-        fpr, tpr, _ = roc_curve(y_test, y_prob)
-        auc = roc_auc_score(y_test, y_prob)
-        roc_df = pd.DataFrame({"FPR": fpr, "TPR": tpr})
-        fig = px.area(roc_df, x="FPR", y="TPR", title=f"ROC Curve (AUC = {auc:.4f})", labels={"FPR": "False Positive Rate", "TPR": "True Positive Rate"})
-        fig.add_shape(type='line', line=dict(dash='dash'), x0=0, x1=1, y0=0, y1=1)
-        st.plotly_chart(fig, use_container_width=True)
-
-        # --- SHAP Analysis ---
-        st.subheader("Feature Importance (SHAP Summary)")
-        explainer = shap.Explainer(model, X_train_scaled)
-        shap_values = explainer(X_test_scaled, check_additivity=False)
-        shap.summary_plot(shap_values, X_test, show=False)
-        st.pyplot(bbox_inches='tight')
-
-# =============================================================================
-# TAB 3 — CUSTOM DATA EXPLORATION
-# =============================================================================
-with custom_tab:
-    if df is None:
-        st.info("👆 Please upload a dataset to explore it interactively.")
-    else:
-        st.header("🧠 Custom Data Exploration")
-        st.markdown("Use **PyGWalker** to explore your dataset freely — drag, drop, and visualize interactively.")
-        pyg_app = StreamlitRenderer(df)
+        # PyGWalker Explorer
+        pyg_app = StreamlitRenderer(df_sandbox)
         pyg_app.explorer()
 
-# =============================================================================
-# TAB 4 — PREDICTION
-# =============================================================================
-with prediction_tab:
-    if df is None:
-        st.info("👆 Please upload a dataset first to train the model.")
     else:
-        st.header("📝 Predict Employee Attrition")
+        st.info("⚠️ Please perform a prediction first in the 'Predict' tab to enable Sandbox exploration.")
 
-        # --- Single Employee Prediction ---
-        st.subheader("Single Employee Prediction")
-        st.markdown("Input employee details below and get predicted attrition.")
-
-        # Create input widgets dynamically
-        user_input = {}
-        for col in X.columns:
-            if str(df[col].dtype) in ["int64", "float64"]:
-                user_input[col] = st.number_input(f"{col}", value=float(df[col].median()))
-            else:
-                unique_vals = df[col].unique().tolist()
-                user_input[col] = st.selectbox(f"{col}", options=unique_vals)
-
-        if st.button("Predict Attrition for Single Employee"):
-            # Prepare the input
-            input_df = pd.DataFrame([user_input])
-            input_encoded = input_df.apply(lambda x: LabelEncoder().fit_transform(x) if x.dtype == "object" else x)
-            input_scaled = scaler.transform(input_encoded)
-            prediction = model.predict(input_scaled)
-            prediction_label = "Yes" if prediction[0] == 1 else "No"
-            st.success(f"Predicted Attrition: **{prediction_label}**")
-
-        # --- Batch Prediction ---
-        st.subheader("Batch Prediction from File")
-        batch_file = st.file_uploader("Upload CSV/XLSX for Batch Prediction", type=["csv", "xlsx"], key="batch_upload")
-
-        if batch_file is not None:
-            if batch_file.name.endswith(".xlsx"):
-                batch_df = pd.read_excel(batch_file)
-            else:
-                batch_df = pd.read_csv(batch_file)
-
-            st.write(f"Dataset loaded with {batch_df.shape[0]} rows and {batch_df.shape[1]} columns.")
-
-            # Encode & scale batch data
-            batch_encoded = batch_df.apply(lambda x: LabelEncoder().fit_transform(x) if x.dtype == "object" else x)
-            batch_scaled = scaler.transform(batch_encoded)
-            batch_predictions = model.predict(batch_scaled)
-            batch_df["Attrition_Prediction"] = ["Yes" if p == 1 else "No" for p in batch_predictions]
-
-            st.success("Predictions completed!")
-
-            # Show first few rows
-            st.dataframe(batch_df.head())
-
-            # Download button
-            csv = batch_df.to_csv(index=False)
-            st.download_button(
-                label="📥 Download Predictions as CSV",
-                data=csv,
-                file_name="attrition_predictions.csv",
-                mime="text/csv"
-            )
