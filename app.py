@@ -7,7 +7,7 @@ import numpy as np
 import shap
 import matplotlib.pyplot as plt
 import seaborn as sns
-import pickle
+import cloudpickle as pickle
 from io import BytesIO
 from pygwalker.api.streamlit import StreamlitRenderer
 

@@ -12,3 +12,4 @@ imbalanced-learn
 ipykernel
 shap
 plotly
+cloudpickle
