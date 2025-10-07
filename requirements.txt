@@ -5,7 +5,7 @@ matplotlib
 seaborn
 pygwalker
 lazypredict
-scikit-learn
+scikit-learn==1.5.1
 streamlit
 ydata-profiling
 imbalanced-learn
